@@ -1,3 +1,4 @@
+import { useState } from "react";
 import PropTypes from "prop-types";
 import { useNavigate } from "react-router-dom";
 import ProfileForm from "../components/ProfileForm";
@@ -6,21 +7,37 @@ import "./ProfilePage.css";
 
 function ProfilePage({ currentUser, onUserChange }) {
   const navigate = useNavigate();
+  const [deleteError, setDeleteError] = useState("");
+  const [deleting, setDeleting] = useState(false);
 
   async function handleDeleteAccount() {
-    // ask for confirmation since deleting an account can't be undone
     const confirmed = window.confirm(
       "Are you sure you want to delete your account? This cannot be undone.",
     );
     if (!confirmed) return;
 
-    await fetch(`/api/users/${currentUser._id}`, { method: "DELETE" });
-    // clear the app-wide user, then move to the login page
-    onUserChange(null);
-    navigate("/login");
+    setDeleteError("");
+    setDeleting(true);
+
+    try {
+      const res = await fetch(`/api/users/${currentUser._id}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setDeleteError(data.error || "Could not delete account");
+        return;
+      }
+
+      onUserChange(null);
+      navigate("/login");
+    } catch {
+      setDeleteError("Could not connect to the server");
+    } finally {
+      setDeleting(false);
+    }
   }
 
-  // safety check in case this renders while the user is being cleared
   if (!currentUser) {
     return <p>Loading profile...</p>;
   }
@@ -29,10 +46,8 @@ function ProfilePage({ currentUser, onUserChange }) {
     <div className="profile-page">
       <h1>Profile</h1>
 
-      {/* username is the login identity, shown here but never editable */}
       <p className="profile-username">@{currentUser.username}</p>
 
-      {/* older accounts may predate this field, so only show it when it's there */}
       {currentUser.createdAt && (
         <p className="profile-since">
           Member since {memberSince(currentUser.createdAt)}
@@ -41,18 +56,24 @@ function ProfilePage({ currentUser, onUserChange }) {
 
       <ProfileForm user={currentUser} onSave={onUserChange} />
 
+      {deleteError && (
+        <p className="profile-delete-error" role="alert">
+          {deleteError}
+        </p>
+      )}
+
       <button
         type="button"
         className="delete-account-button"
         onClick={handleDeleteAccount}
+        disabled={deleting}
       >
-        Delete account
+        {deleting ? "Deleting..." : "Delete account"}
       </button>
     </div>
   );
 }
 
-// currentUser is null for a moment while the account is being cleared
 ProfilePage.propTypes = {
   currentUser: PropTypes.shape({
     _id: PropTypes.string.isRequired,
