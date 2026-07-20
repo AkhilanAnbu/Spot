@@ -5,6 +5,16 @@ import { usersDb } from "../db/usersDb.js";
 import { requireValidId } from "../middleware/requireValidId.js";
 
 const router = express.Router();
+const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+function isValidDateString(value) {
+  if (typeof value !== "string" || !DATE_PATTERN.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return (
+    !Number.isNaN(parsed.getTime()) &&
+    parsed.toISOString().slice(0, 10) === value
+  );
+}
 
 // today as a plain YYYY-MM-DD string, so it compares directly against the
 // startDate/endDate strings a challenge stores (both are zero-padded ISO dates)
@@ -32,13 +42,24 @@ function resolveStatus(acceptance, challenge) {
 // CREATE a challenge template
 router.post("/", async (req, res) => {
   try {
-    const { description, startDate, endDate, targetDays } = req.body;
+    const description = String(req.body.description || "")
+      .trim()
+      .replace(/\s+/g, " ");
+    const { startDate, endDate, targetDays } = req.body;
 
     // the window has to make sense before anyone can work toward it
     if (!description || !startDate || !endDate) {
       return res
         .status(400)
         .json({ error: "description, startDate and endDate are required" });
+    }
+    if (description.length > 200) {
+      return res
+        .status(400)
+        .json({ error: "Description must be 200 characters or fewer" });
+    }
+    if (!isValidDateString(startDate) || !isValidDateString(endDate)) {
+      return res.status(400).json({ error: "Enter valid challenge dates" });
     }
     // a challenge posted in the past would be hidden the moment it's created
     if (startDate < todayString()) {
@@ -217,10 +238,18 @@ router.post("/:id/day", requireValidId, async (req, res) => {
 
     // the day being marked has to fall inside the challenge window
     const date = req.body.date;
-    if (!date || date < challenge.startDate || date > challenge.endDate) {
+    if (!isValidDateString(date)) {
+      return res.status(400).json({ error: "Enter a valid completion date" });
+    }
+    if (date < challenge.startDate || date > challenge.endDate) {
       return res
         .status(400)
         .json({ error: "That date is outside the challenge window" });
+    }
+    if (date > todayString()) {
+      return res
+        .status(400)
+        .json({ error: "You cannot mark a future day as complete" });
     }
 
     // marking is a toggle: on if the day isn't there yet, off if it is.
