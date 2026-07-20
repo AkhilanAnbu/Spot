@@ -3,53 +3,82 @@ import bcrypt from "bcryptjs";
 import passport from "../auth/passport.js";
 import { usersDb } from "../db/usersDb.js";
 
-/*
-  auth.js
-  - Express router handling authentication-related endpoints for the Spot app.
-  - Provides registration, login, logout, and current-user retrieval routes.
-  - Uses Passport for session-based authentication and usersDb for user storage.
-  - Passwords are hashed with bcrypt before creating users.
-*/
-
 const router = express.Router();
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const USERNAME_PATTERN = /^[a-z0-9_]{3,30}$/;
+const SESSION_COOKIE_NAME = "spot.sid";
 
-// REGISTER a new user, then log them in automatically
+function normalizeEmail(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase();
+}
+
+function normalizeUsername(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase();
+}
+
+function cleanDisplayName(value) {
+  return String(value || "")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function registrationError({ username, email, password, displayName }) {
+  if (!username || !email || !password || !displayName) {
+    return "All fields are required";
+  }
+  if (!USERNAME_PATTERN.test(username)) {
+    return "Username must be 3-30 characters using letters, numbers, or underscores";
+  }
+  if (!EMAIL_PATTERN.test(email) || email.length > 254) {
+    return "Enter a valid email address";
+  }
+  if (displayName.length > 60) {
+    return "Display name must be 60 characters or fewer";
+  }
+  if (password.length < 6 || password.length > 72) {
+    return "Password must be between 6 and 72 characters";
+  }
+  return null;
+}
+
+// REGISTER a new user, then log them in automatically.
 router.post("/register", async (req, res) => {
   try {
-    // extract required fields from request body
-    const { username, email, password, displayName } = req.body;
+    const username = normalizeUsername(req.body.username);
+    const email = normalizeEmail(req.body.email);
+    const displayName = cleanDisplayName(req.body.displayName);
+    const password =
+      typeof req.body.password === "string" ? req.body.password : "";
 
-    // validate presence of required fields
-    if (!username || !email || !password || !displayName) {
-      return res.status(400).json({ error: "All fields are required" });
+    const validationError = registrationError({
+      username,
+      email,
+      password,
+      displayName,
+    });
+    if (validationError) {
+      return res.status(400).json({ error: validationError });
     }
-    // enforce minimum password length
-    if (password.length < 6) {
-      return res
-        .status(400)
-        .json({ error: "Password must be at least 6 characters" });
-    }
 
-    // normalize username to lowercase for uniqueness checks
-    const lowerUsername = username.toLowerCase();
+    const [existingUsername, existingEmail] = await Promise.all([
+      usersDb.findByUsername(username),
+      usersDb.findByEmail(email),
+    ]);
 
-    // check if username already exists
-    const existingUsername = await usersDb.findByUsername(lowerUsername);
     if (existingUsername) {
       return res.status(409).json({ error: "Username is already taken" });
     }
-    // check if email already exists
-    const existingEmail = await usersDb.findByEmail(email);
     if (existingEmail) {
       return res.status(409).json({ error: "Email is already taken" });
     }
 
-    // hash the plain-text password before storing
     const passwordHash = await bcrypt.hash(password, 10);
-
-    // create new user record in database
     const newUser = await usersDb.create({
-      username: lowerUsername,
+      username,
       email,
       passwordHash,
       displayName,
@@ -58,62 +87,81 @@ router.post("/register", async (req, res) => {
       createdAt: new Date(),
     });
 
-    // req.login() is provided by Passport — it logs the new user in
-    // right away, the same way a normal login would, so they don't
-    // have to register then separately log in.
-    // call req.login to establish a session for the new user
     req.login(newUser, (err) => {
-      if (err) return res.status(500).json({ error: err.message });
-      // respond with sanitized user object
-      res.status(201).json(usersDb.sanitize(newUser));
+      if (err) {
+        console.error(
+          "Could not create login session after registration:",
+          err,
+        );
+        return res
+          .status(500)
+          .json({ error: "Could not complete registration" });
+      }
+      return res.status(201).json(usersDb.sanitize(newUser));
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    if (err?.code === 11000) {
+      return res
+        .status(409)
+        .json({ error: "Username or email is already taken" });
+    }
+    console.error("Registration failed:", err);
+    return res.status(500).json({ error: "Could not register account" });
   }
 });
 
-// LOGIN an existing user
+// LOGIN an existing user.
 router.post("/login", (req, res, next) => {
-  // authenticate using Passport's local strategy
-  passport.authenticate("local", (err, user) => {
-    // handle internal error from strategy
+  req.body.username = normalizeUsername(req.body.username);
+  if (!req.body.username || typeof req.body.password !== "string") {
+    return res
+      .status(400)
+      .json({ error: "Username and password are required" });
+  }
+
+  return passport.authenticate("local", (err, user) => {
     if (err) return next(err);
-    // if authentication failed, respond with 401
     if (!user) {
       return res.status(401).json({ error: "Invalid username or password" });
     }
-    // establish a session for the authenticated user
-    req.login(user, (loginErr) => {
+
+    return req.login(user, (loginErr) => {
       if (loginErr) return next(loginErr);
-      // return sanitized user profile
-      res.json(usersDb.sanitize(user));
+      return res.json(usersDb.sanitize(user));
     });
   })(req, res, next);
 });
 
-// LOGOUT the current user
+// LOGOUT the current user and invalidate both the stored session and cookie.
 router.post("/logout", (req, res) => {
-  // req.logout() is provided by Passport — it removes the user from the session
-  // call logout to remove user from req and clear passport session
-  req.logout((err) => {
-    if (err) return res.status(500).json({ error: err.message });
-    // destroy server-side session so client cookie is invalidated
-    req.session.destroy(() => {
-      res.json({ message: "Logged out" });
+  req.logout((logoutErr) => {
+    if (logoutErr) {
+      console.error("Logout failed:", logoutErr);
+      return res.status(500).json({ error: "Could not log out" });
+    }
+
+    return req.session.destroy((sessionErr) => {
+      if (sessionErr) {
+        console.error("Session destruction failed:", sessionErr);
+        return res.status(500).json({ error: "Could not log out" });
+      }
+
+      res.clearCookie(SESSION_COOKIE_NAME, {
+        httpOnly: true,
+        sameSite: "lax",
+        secure: process.env.NODE_ENV === "production",
+      });
+      return res.json({ message: "Logged out" });
     });
   });
 });
 
-// GET the currently logged-in user
+// GET the currently logged-in user.
 router.get("/me", (req, res) => {
-  // this route is used by the frontend to check if the user is logged in and get their profile
-  // req.isAuthenticated() is provided by Passport — it returns true if the user is logged in
-  // if there's no authenticated user, return 401
   if (!req.isAuthenticated()) {
     return res.status(401).json({ error: "Not logged in" });
   }
-  // return the current user attached to the request
-  res.json(req.user);
+  return res.json(usersDb.sanitize(req.user));
 });
 
 export default router;
