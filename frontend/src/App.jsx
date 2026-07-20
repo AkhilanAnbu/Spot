@@ -17,27 +17,38 @@ function App() {
   // check if there is a logged in session yet: used by Navbar, protectedroute and implicity to every ro
   const [loading, setLoading] = useState(true);
 
-  // on first load, ask the server if we already have a logged-in session
+  // On first load, ask the server whether a login session already exists.
   useEffect(() => {
     async function loadCurrentUser() {
-      const res = await fetch("/api/auth/me");
-      // only store the user if the session is still valid
-      if (res.ok) {
-        const user = await res.json();
-        setCurrentUser(user); // user contains the logged-in user's info (id, username, displayName)
+      try {
+        const res = await fetch("/api/auth/me");
+        if (res.ok) {
+          const user = await res.json();
+          setCurrentUser(user);
+        }
+      } catch {
+        // A network failure means the session could not be verified. Protected
+        // routes will show the login screen instead of leaving the app loading.
+        setCurrentUser(null);
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     }
 
     loadCurrentUser();
   }, []);
 
-  // * This function is passed down to the NavBar and called when the user clicks "Logout".
+  // Return a success flag so the navbar only redirects after the server has
+  // actually destroyed the session.
   async function handleLogout() {
-    // tell the server to end the session
-    await fetch("/api/auth/logout", { method: "POST" });
-    // clear the user locally so the nav updates immediately
-    setCurrentUser(null);
+    try {
+      const res = await fetch("/api/auth/logout", { method: "POST" });
+      if (!res.ok) return false;
+      setCurrentUser(null);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   return (
