@@ -303,30 +303,23 @@ router.put("/:id/accept", requireValidId, async (req, res) => {
   }
 });
 
-// DELETE a pending pact — the proposer deleting their own proposal, or the
-// invited partner declining it. Both are the same hard delete; only the
-// button label differs on the frontend.
 router.delete("/:id", requireValidId, async (req, res) => {
   try {
     const pact = await pactsDb.findById(req.objectId);
     if (!pact) return res.status(404).json({ error: "Pact not found" });
 
-    // only the two partners can act on their own pact
     const myId = req.user._id.toString();
     if (!isMember(pact, myId)) {
       return res.status(403).json({ error: "Not a member of this pact" });
     }
 
-    // an active pact can't be torn down anymore — only pending ones
-    if (pact.status !== "pending") {
-      return res.status(400).json({ error: "Cannot delete an active pact" });
-    }
-
-    // deleting is a hard delete — there's no "declined" status to track
     await pactsDb.remove(req.objectId);
-    res.json({ message: "Pact deleted" });
+    return res.json({
+      message: pact.status === "active" ? "Pact dissolved" : "Pact deleted",
+    });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("Pact deletion failed:", err);
+    return res.status(500).json({ error: "Could not remove pact" });
   }
 });
 
