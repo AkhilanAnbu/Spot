@@ -2,7 +2,6 @@ import { useState } from "react";
 import PropTypes from "prop-types";
 import "./ChallengeCard.css";
 
-// today as YYYY-MM-DD, built from local parts so the date can't slip a day
 function todayString() {
   const now = new Date();
   const year = now.getFullYear();
@@ -12,26 +11,21 @@ function todayString() {
 }
 
 function ChallengeCard({ challenge, currentUser, onChanged }) {
-  // which day the accepter is marking done (defaults to today)
-  const [dayToLog, setDayToLog] = useState(todayString);
+  const today = todayString();
+  const [dayToLog, setDayToLog] = useState(today);
   const [error, setError] = useState("");
 
-  // the creator can delete their own challenge, but can't accept it
   const isCreator = challenge.creatorId === currentUser._id;
-  // myAcceptance is this user's own record for the challenge, or null
   const acceptance = challenge.myAcceptance;
   const isAccepter = Boolean(acceptance);
-
-  // an accepter's card carries a status; an untouched open challenge shows "open"
   const status = acceptance ? acceptance.status : "open";
-  // days marked done so far, against the challenge's target
   const doneCount = acceptance ? acceptance.completedDays.length : 0;
-  // the mark button toggles, so its label depends on whether the picked day
-  // is already marked — clicking a marked day unmarks it
   const dayAlreadyMarked =
     acceptance && acceptance.completedDays.includes(dayToLog);
+  const challengeHasStarted = today >= challenge.startDate;
+  const latestLoggableDay =
+    challenge.endDate < today ? challenge.endDate : today;
 
-  // pull the server's message off a failed response so the user sees why
   async function readError(res, fallback) {
     const data = await res.json().catch(() => ({}));
     return data.error || fallback;
@@ -39,7 +33,6 @@ function ChallengeCard({ challenge, currentUser, onChanged }) {
 
   async function handleAccept() {
     setError("");
-    // no accepterId — the server reads it from the session
     const res = await fetch(`/api/challenges/${challenge._id}/accept`, {
       method: "PUT",
     });
@@ -53,7 +46,6 @@ function ChallengeCard({ challenge, currentUser, onChanged }) {
   async function handleMarkDay(e) {
     e.preventDefault();
     setError("");
-    // the server toggles the day on/off in the accepter's completedDays
     const res = await fetch(`/api/challenges/${challenge._id}/day`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -69,6 +61,7 @@ function ChallengeCard({ challenge, currentUser, onChanged }) {
   async function handleDelete() {
     const confirmed = window.confirm("Delete this challenge?");
     if (!confirmed) return;
+
     setError("");
     const res = await fetch(`/api/challenges/${challenge._id}`, {
       method: "DELETE",
@@ -88,7 +81,6 @@ function ChallengeCard({ challenge, currentUser, onChanged }) {
         <span className={`challenge-status status-${status}`}>{status}</span>
       </div>
 
-      {/* who created the challenge, shown as DisplayName (@username) */}
       {challenge.creator && (
         <p className="challenge-creator">
           by {challenge.creator.displayName} (@{challenge.creator.username})
@@ -104,7 +96,6 @@ function ChallengeCard({ challenge, currentUser, onChanged }) {
         {isAccepter && ` — ${doneCount} / ${challenge.targetDays} done`}
       </p>
 
-      {/* OPEN to you: anyone but the creator can accept, even if others have */}
       {!isAccepter && !isCreator && (
         <button type="button" onClick={handleAccept}>
           Accept challenge
@@ -114,15 +105,20 @@ function ChallengeCard({ challenge, currentUser, onChanged }) {
         <p className="challenge-note">Open for others to accept</p>
       )}
 
-      {/* ACCEPTED by you: mark any day in the window done */}
-      {isAccepter && status === "accepted" && (
+      {isAccepter && status === "accepted" && !challengeHasStarted && (
+        <p className="challenge-note">
+          This challenge starts on {challenge.startDate}.
+        </p>
+      )}
+
+      {isAccepter && status === "accepted" && challengeHasStarted && (
         <form className="proof-form" onSubmit={handleMarkDay}>
           <label htmlFor={`dayToLog-${challenge._id}`}>Mark a day done</label>
           <input
             id={`dayToLog-${challenge._id}`}
             type="date"
             min={challenge.startDate}
-            max={challenge.endDate}
+            max={latestLoggableDay}
             value={dayToLog}
             onChange={(e) => setDayToLog(e.target.value)}
             required
@@ -133,7 +129,6 @@ function ChallengeCard({ challenge, currentUser, onChanged }) {
         </form>
       )}
 
-      {/* list the days marked done so far */}
       {isAccepter && acceptance.completedDays.length > 0 && (
         <ul className="proof-list">
           {acceptance.completedDays.map((date) => (
@@ -144,7 +139,6 @@ function ChallengeCard({ challenge, currentUser, onChanged }) {
 
       {error && <p className="challenge-card-error">{error}</p>}
 
-      {/* only the creator deletes, and only while nobody has accepted yet */}
       {isCreator && (
         <button
           type="button"
