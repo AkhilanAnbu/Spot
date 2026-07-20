@@ -11,49 +11,72 @@ function PactDetailPage({ currentUser }) {
   const [error, setError] = useState("");
   const [loadError, setLoadError] = useState("");
 
-  // fetches this pact (with both partners' profiles) from the server.
-  // useCallback keeps the same function between renders unless the id
-  // changes, so the useEffect below can safely depend on it.
+  async function readError(res, fallback) {
+    const data = await res.json().catch(() => ({}));
+    return data.error || fallback;
+  }
+
   const loadPact = useCallback(async () => {
-    const res = await fetch(`/api/pacts/${id}`);
-    if (res.ok) {
+    setLoadError("");
+    try {
+      const res = await fetch(`/api/pacts/${id}`);
+      if (!res.ok) {
+        setLoadError(await readError(res, "Could not load this pact"));
+        return;
+      }
+
       const data = await res.json();
       setPact(data);
       setWeeklyTarget(data.weeklyTarget);
-      return;
+    } catch {
+      setLoadError("Could not connect to the server");
     }
-    // without this the page would sit on "Loading pact..." forever
-    const data = await res.json();
-    setLoadError(data.error || "Could not load this pact");
   }, [id]);
 
-  // load the pact when the page mounts, and again if the id in the url changes
   useEffect(() => {
     loadPact();
   }, [loadPact]);
 
   async function handleSaveTarget(e) {
-    // stop the browser from doing a full page reload on submit
     e.preventDefault();
     setError("");
 
-    const res = await fetch(`/api/pacts/${id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ weeklyTarget: Number(weeklyTarget) }),
-    });
+    try {
+      const res = await fetch(`/api/pacts/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ weeklyTarget: Number(weeklyTarget) }),
+      });
 
-    if (!res.ok) {
-      const data = await res.json();
-      setError(data.error);
-      return;
+      if (!res.ok) {
+        setError(await readError(res, "Could not update the weekly target"));
+        return;
+      }
+      navigate("/");
+    } catch {
+      setError("Could not connect to the server");
     }
-
-    // head back to the dashboard now that the new target is saved
-    navigate("/");
   }
 
-  // the pact couldn't be loaded at all — say so instead of hanging
+  async function handleDissolve() {
+    const confirmed = window.confirm(
+      "Dissolve this active pact? The shared streak will no longer be available.",
+    );
+    if (!confirmed) return;
+
+    setError("");
+    try {
+      const res = await fetch(`/api/pacts/${id}`, { method: "DELETE" });
+      if (!res.ok) {
+        setError(await readError(res, "Could not dissolve pact"));
+        return;
+      }
+      navigate("/");
+    } catch {
+      setError("Could not connect to the server");
+    }
+  }
+
   if (loadError) {
     return (
       <div className="pact-detail-page">
@@ -63,13 +86,10 @@ function PactDetailPage({ currentUser }) {
     );
   }
 
-  // still waiting on the initial fetch
   if (!pact) {
     return <p>Loading pact...</p>;
   }
 
-  // work out which side of the pact is me, so the "this week" tile can label
-  // my own count as "You" and show the other person by name
   const iAmPartnerA = pact.partnerA._id === currentUser._id;
   const partner = iAmPartnerA ? pact.partnerB : pact.partnerA;
   const canEdit = pact.status === "pending" && pact.role === "proposer";
@@ -79,7 +99,6 @@ function PactDetailPage({ currentUser }) {
       <Link to="/">← Back to dashboard</Link>
 
       <div className="pact-detail-card">
-        {/* names lead, with the status pill on the right */}
         <div className="pact-detail-header">
           <h1>
             You &amp; {partner.displayName} (@{partner.username})
@@ -90,13 +109,13 @@ function PactDetailPage({ currentUser }) {
         </div>
 
         <div className="stat-tiles">
-          {/* weekly target is the anchor — first and, when pending, editable */}
           <div className="stat-tile stat-tile-target">
             {canEdit ? (
               <form onSubmit={handleSaveTarget}>
                 <select
                   id="weeklyTarget"
                   name="weeklyTarget"
+                  aria-label="Weekly workout target"
                   value={weeklyTarget}
                   onChange={(e) => setWeeklyTarget(e.target.value)}
                 >
@@ -114,7 +133,6 @@ function PactDetailPage({ currentUser }) {
             <span className="stat-label">Weekly target</span>
           </div>
 
-          {/* streak and this week only exist once both partners are active */}
           {pact.status === "active" && (
             <>
               <div className="stat-tile">
@@ -147,14 +165,22 @@ function PactDetailPage({ currentUser }) {
           )}
         </div>
 
-        {/* a pact you proposed is still waiting on the other person */}
         {pact.status === "pending" && pact.role === "proposer" && (
           <p className="pact-note">Waiting to be accepted</p>
         )}
 
+        {pact.status === "active" && (
+          <button
+            type="button"
+            className="pact-dissolve-button"
+            onClick={handleDissolve}
+          >
+            Dissolve pact
+          </button>
+        )}
+
         {error && <p className="pact-detail-error">{error}</p>}
 
-        {/* emails are demoted to a quiet footer — still here, just not shouting */}
         <p className="pact-detail-footer">
           {pact.partnerA.displayName} ({pact.partnerA.email}) ·{" "}
           {pact.partnerB.displayName} ({pact.partnerB.email})
